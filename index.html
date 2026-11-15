@@ -2,16 +2,35 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>冰河地形工作室 V2｜地形積木 × 等高線</title>
+<title>冰河地形工作室 V3｜國家公園尺度 × 手繪 × 實心模型</title>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.1/examples/jsm/"}}</script>
 </head>
 <body>
-<header><div class="brand"><div class="mark">△</div><div><h1>冰河地形工作室 <span>V2</span></h1><p>先塑造地形，讓等高線自動出現｜獨立於 AR</p></div></div><div class="head-actions"><button id="btn-save" class="ghost">儲存專案</button><button id="btn-open" class="ghost">開啟專案</button><button id="btn-undo" class="ghost" title="撤銷上一步">↶ 撤銷</button></div></header>
+<header><div class="brand"><div class="mark">△</div><div><h1>冰河地形工作室 <span>V3</span></h1><p>實心地形底座、國家公園尺度、自由手繪｜不涉及 AR</p></div></div><div class="head-actions"><button id="btn-save" class="ghost">儲存專案</button><button id="btn-open" class="ghost">開啟專案</button><button id="btn-undo" class="ghost" title="撤銷上一步">↶ 撤銷</button></div></header>
 <main class="layout">
 <aside class="leftpanel">
-  <section class="panel"><h2>01 · 起始地形</h2>
-    <div class="stack"><button id="btn-demo" class="choice strong">載入虛構冰河教學地景</button><button id="btn-blank" class="choice">建立平坦地表</button></div>
+  <section class="panel"><h2>01 · 建立地形與邊界高度</h2>
+    <p class="hint">先設定整片地圖的大小與四角邊界高程。北在畫面上方、東在右方；四角之間平滑過渡。這是虛構地景設定，不代表任何特定國家公園的行政邊界。</p>
+    <label>場景尺度（全景）
+      <select id="extent-preset">
+        <option value="20000">局部冰河谷｜20 × 12 km</option>
+        <option value="50000">山區流域｜50 × 30 km</option>
+        <option value="80000" selected>國家公園全景｜80 × 48 km</option>
+        <option value="120000">大型山區｜120 × 72 km</option>
+        <option value="180000">超大範圍｜180 × 108 km</option>
+      </select>
+    </label>
+    <label>四角統一高度（公尺）<div class="inline-actions"><input type="number" id="boundary-all" value="600" step="50"><button id="btn-equal-boundary" class="choice" type="button">套用四角</button></div></label>
+    <div class="corner-grid">
+      <label>左上（西北）<input id="boundary-nw" type="number" value="2600" step="50"></label>
+      <label>右上（東北）<input id="boundary-ne" type="number" value="700" step="50"></label>
+      <label>左下（西南）<input id="boundary-sw" type="number" value="1900" step="50"></label>
+      <label>右下（東南）<input id="boundary-se" type="number" value="500" step="50"></label>
+    </div>
+    <button id="btn-create" class="choice strong">依邊界高度建立新地表</button>
+    <div class="stack"><button id="btn-demo" class="choice">載入虛構冰河教學地景</button><button id="btn-blank" class="choice">建立 600 m 平坦地表</button></div>
+    <p id="extent-info" class="extent-info"></p>
     <div class="subhead">真實地形案例（線上讀取 DEM）</div>
     <div class="real-list">
       <button class="example" data-real="aletsch"><strong>阿雷奇冰河附近</strong><small>瑞士阿爾卑斯山 · 山岳起伏</small></button>
@@ -29,15 +48,26 @@
       <button data-type="outwash">▱ 冰水平原</button><button data-type="dune">◡ 沙丘</button>
     </div>
     <button id="btn-select" class="choice selected">選取／拖曳</button>
+    <div class="subhead">手繪地形（在左側平面圖拖曳）</div>
+    <div id="brush-grid" class="stamp-grid">
+      <button type="button" data-brush="raise">＋ 抬升山地</button>
+      <button type="button" data-brush="lower">－ 刻蝕谷地</button>
+      <button type="button" data-brush="smooth">≈ 平滑坡面</button>
+      <button type="button" data-brush="flatten">▱ 整平成指定高程</button>
+    </div>
+    <label>筆刷半徑 <output id="brush-radius-o"></output><input id="brush-radius" type="range" min="0.2" max="15" step="0.2" value="3"></label>
+    <label>每筆強度 <output id="brush-strength-o"></output><input id="brush-strength" type="range" min="5" max="250" step="5" value="65"></label>
+    <label>整平目標高程（公尺）<input id="brush-target" type="number" value="1100" step="50"></label>
+    <p class="hint">手繪修改地形基底，高程積木仍可額外疊加；「撤銷」可還原筆畫。</p>
     <div class="subhead">目前積木（先選取再調整） <span id="shape-count">0</span></div><div id="shape-list" class="shape-list"></div>
   </section>
 </aside>
 <section class="workarea">
   <div class="viewbar"><div><strong>平面地形與等高線</strong><span> 點選放置／拖曳移動</span></div><div class="seg"><button id="map-contours" class="active">等高線</button><button id="map-elev">分層設色</button><button id="map-change">地形變化</button></div></div>
-  <div class="map-wrap"><canvas id="map" width="1000" height="620" aria-label="地形編輯地圖"></canvas><div id="map-hint">選取積木類型後，點擊地圖放置</div><div class="compass">N ↑</div></div>
+  <div class="map-wrap"><canvas id="map" width="1000" height="620" aria-label="地形編輯地圖"></canvas><div id="map-hint">選取積木類型後，點擊地圖放置</div><div class="compass">N ↑</div><div id="map-scale" class="map-scale"></div></div>
   <div class="viewbar"><div><strong>3D 地形預覽</strong><span> 拖曳旋轉 · 滾輪縮放 · 點擊放置</span></div><div class="seg"><button id="view-now" class="active">塑形後</button><button id="view-before">原始地表</button><button id="view-diff">作用差異</button></div></div>
   <div class="three-wrap" id="three-wrap"><div id="three-placeholder">載入 3D 引擎中…（需要網路存取 Three.js）</div><div class="height-legend" id="height-legend"></div></div>
-  <div class="footnote">提示：3D 積木為地形高程變形，不是把模型物件疊在山上。侵蝕會降低高程、堆積會提高高程；等高線依變形後的實際網格重新計算。</div>
+  <div class="footnote">提示：3D 模型含底面與四周側壁，GLB 也匯出實心地形；等高線依完成的同一份高程網格計算。大範圍資料的格網解析度較粗，微地形請用較小場景製作。</div>
 </section>
 <aside class="rightpanel">
   <section class="panel"><h2>03 · 編輯積木</h2><div id="no-selection" class="empty">選取一個地形積木，調整位置、長寬、影響深度與方向。</div>
@@ -54,6 +84,10 @@
     <label>整體平滑 <output id="smooth-o">2 次</output><input id="smooth" type="range" min="0" max="9" step="1" value="2"></label>
     <label>立體垂直誇大 <output id="z-o">1.5×</output><input id="z-scale" type="range" min="0.5" max="3" step="0.1" value="1.5"></label>
     <label>等高距（公尺）<select id="interval"><option>10</option><option>20</option><option>25</option><option>50</option><option selected>100</option><option>200</option><option>250</option><option>500</option></select></label>
+    <label>實心底座厚度（預覽比例） <output id="base-thickness-o">0.6</output>
+      <input id="base-thickness" type="range" min="0.2" max="1.8" step="0.1" value="0.6">
+    </label>
+    <label class="check"><input id="lock-boundary" type="checkbox" checked> 保持最外圈高程（邊界鎖定）</label>
     <label class="check"><input id="contours-overlay" type="checkbox" checked> 3D 上顯示等高線</label>
     <label class="check"><input id="show-stamps" type="checkbox" checked> 顯示編輯控制範圍</label>
     <p id="range-info" class="hint">高程範圍：—</p>

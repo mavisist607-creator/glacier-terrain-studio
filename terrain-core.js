@@ -1,5 +1,5 @@
 // 地形高程運算。不依賴 Three.js，可單獨測試。
-export const NX=180, NY=108;
+export const NX=300, NY=180;
 export const TYPES={
  horn:{name:'角峰',group:'冰蝕',height:550,w:.105,l:.16,soft:.38,angle:0,info:'集中抬升的尖銳高地；實際角峰通常由多個冰斗向後侵蝕形成'},
  ridge:{name:'刃嶺',group:'冰蝕',height:270,w:.17,l:.065,soft:.3,angle:-10,info:'狹窄稜線；需配合相鄰冰斗判讀'},
@@ -16,6 +16,13 @@ export const clamp=(n,a,b)=>Math.min(b,Math.max(a,n));
 export const lerp=(a,b,t)=>a+(b-a)*t;
 export const fmt=n=>Math.round(n).toLocaleString('en-US');
 export function newShape(type,x=.5,y=.5){const t=TYPES[type];if(!t)throw Error('未知類型');return {id:'s'+Date.now().toString(36)+Math.floor(Math.random()*1e6).toString(36),type,x,y,w:t.w,l:t.l,height:t.height,angle:t.angle,soft:t.soft};}
+// 使用四角高度建立連續起伏地表；上方為北，右側為東。
+export function boundaryBase(nw=2600,ne=700,sw=1900,se=500){
+ const a=new Float32Array(NX*NY);
+ for(let j=0;j<NY;j++){const v=j/(NY-1);const left=lerp(nw,sw,v),right=lerp(ne,se,v);
+   for(let i=0;i<NX;i++)a[j*NX+i]=lerp(left,right,i/(NX-1));}
+ return a;
+}
 export function emptyBase(level=600,slope=0){const a=new Float32Array(NX*NY);for(let j=0;j<NY;j++)for(let i=0;i<NX;i++)a[j*NX+i]=level+slope*(1-i/(NX-1));return a;}
 export function bilinear(src,sw,sh,u,v){const x=clamp(u,0,1)*(sw-1),y=clamp(v,0,1)*(sh-1),i=Math.floor(x),j=Math.floor(y),fx=x-i,fy=y-j,k=(xx,yy)=>src[Math.min(sh-1,yy)*sw+Math.min(sw-1,xx)];const a=lerp(k(i,j),k(i+1,j),fx),b=lerp(k(i,j+1),k(i+1,j+1),fx);return lerp(a,b,fy);}
 export function resample(src,sw,sh){const dst=new Float32Array(NX*NY);for(let y=0;y<NY;y++)for(let x=0;x<NX;x++)dst[y*NX+x]=bilinear(src,sw,sh,x/(NX-1),y/(NY-1));return dst;}
@@ -80,7 +87,7 @@ export function demo(){const b=emptyBase(620,1450);const shapes=[];const add=(ty
  add('moraine',.66,.53,{height:140,w:.095,l:.27,angle:0});add('outwash',.79,.51,{height:-80,w:.21,l:.36});
  for(const [x,y] of [[.69,.26],[.77,.32],[.72,.68],[.82,.72]])add('drumlin',x,y,{height:80,w:.066,l:.033,angle:-12});
  add('esker',.79,.57,{height:87,w:.16,l:.035,angle:18});for(const [x,y] of [[.92,.3],[.93,.54],[.95,.75]])add('dune',x,y,{height:65,w:.05,l:.045,angle:-15});
- return {base:b,objects:shapes,widthM:16000,heightM:9600,source:'虛構冰河地景（示意地形，可修改）',sourceURL:'',real:false};
+ return {base:b,objects:shapes,widthM:80000,heightM:48000,source:'虛構冰河地景（示意地形，可修改）',sourceURL:'',real:false};
 }
 export function parseASC(raw){const lines=raw.replace(/^\uFEFF/,'').trim().split(/\r?\n/);const head={};let idx=0;while(idx<lines.length&&Object.keys(head).length<6){const m=lines[idx].trim().match(/^([a-zA-Z_]+)\s+([-+\d.eE]+)/);if(!m)break;head[m[1].toLowerCase()]=+m[2];idx++;}
  const sw=head.ncols,sh=head.nrows;if(!(sw>=2&&sh>=2&&sw<=10000&&sh<=10000))throw Error('ASC 標頭缺少有效的 ncols/nrows');const vals=lines.slice(idx).join(' ').trim().split(/\s+/).map(Number);if(vals.length<sw*sh)throw Error('ASC 高程筆數不足');let data=Float32Array.from(vals.slice(0,sw*sh));const nodata=head.nodata_value;let min=Infinity;for(const v of data)if(Number.isFinite(v)&&v!==nodata&&v>-9990)min=Math.min(min,v);if(!Number.isFinite(min))throw Error('ASC 沒有有效高程');for(let i=0;i<data.length;i++)if(!Number.isFinite(data[i])||data[i]===nodata||data[i]<-9990)data[i]=min;
