@@ -2,8 +2,9 @@ let THREE, OrbitControls, GLTFExporter; // 非同步載入，2D 編輯器可在 
 import {NX,NY,TYPES,clamp,lerp,fmt,newShape,emptyBase,boundaryBase,bilinear,resample,cropResample,applyShapes,rangeOf,eachContour,demo,parseASC,exportASC} from './terrain-core.js';
 
 const $=id=>document.getElementById(id), map=$('map'),ctx=map.getContext('2d',{willReadFrequently:true});
-let state=demo(),height=new Float32Array(NX*NY),selected=null,placeType=null,brushMode=null,brushPoint=null,mapMode='contours',viewMode='now',show3DContours=true,showStamps=true,history=[],future=[],refreshTimer=0;
-let renderer,scene,camera,controls,terrainMesh,linesGroup,raycaster;
+let state=demo(),height=new Float32Array(NX*NY),selected=null,placeType=null,brushMode=null,brushPoint=null,mapMode='contours',viewMode='now',show3DContours=false,showStamps=true,history=[],future=[],refreshTimer=0;
+let renderer,scene,camera,controls,terrainMesh,linesGroup,raycaster,markersGroup,waterGroup;
+let orbitMode=false, viewReady=false;
 const WORLD_W=10,WORLD_D=6;
 function msg(t){$('status').textContent=t;}
 function snapshot(){return {objects:structuredClone(state.objects),base:Array.from(state.base),source:state.source,sourceURL:state.sourceURL,real:state.real,widthM:state.widthM,heightM:state.heightM,smooth:state.smooth??2,lockBoundary:$('lock-boundary').checked,baseThickness:Number($('base-thickness').value)};}
@@ -20,8 +21,8 @@ function syncUI(){ $('smooth').value=state.smooth??2;$('smooth-o').textContent=$
 function refresh(full=true){clearTimeout(refreshTimer);recalc();drawMap();if(full){updateTerrain();update3DContours();}updateList();updateEditor();$('source-label').textContent='來源：'+state.source;}
 function schedule(){clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>refresh(true),65);}
 function setActiveButtons(group,current){group.forEach(id=>$(id).classList.toggle('active',id===current));}
-function chooseStamp(type){placeType=type;brushMode=null;selected=null;document.querySelectorAll('[data-brush]').forEach(b=>b.classList.remove('active'));document.querySelectorAll('[data-type]').forEach(x=>x.classList.toggle('active',x.dataset.type===type));$('btn-select').classList.toggle('selected',!type);$('map-hint').textContent=type?`放置 ${TYPES[type].name}：點擊地圖或 3D 模型`:'選取積木後拖曳，可以移動位置';updateEditor();}
-function chooseBrush(mode){placeType=null;brushMode=mode;selected=null;document.querySelectorAll('[data-type]').forEach(b=>b.classList.remove('active'));document.querySelectorAll('[data-brush]').forEach(b=>b.classList.toggle('active',b.dataset.brush===mode));$('btn-select').classList.remove('selected');$('map-hint').textContent='手繪模式：在平面地形圖拖曳，按「撤銷」可還原整筆畫';updateEditor();drawMap();}
+function chooseStamp(type){placeType=type;brushMode=null;orbitMode=false;selected=null;document.querySelectorAll('[data-brush]').forEach(b=>b.classList.remove('active'));document.querySelectorAll('[data-type]').forEach(x=>x.classList.toggle('active',x.dataset.type===type));$('btn-select').classList.toggle('selected',!type);$('btn-orbit').classList.remove('selected');$('map-hint').textContent=type?`放置 ${TYPES[type].name}：點擊地圖或 3D 模型`:'選取模型上的圓形控制點後拖曳，可移動積木；拖曳空白處可旋轉';$('stage-tip').textContent=type?`點立體地表放置「${TYPES[type].name}」`:'選取圓點移動積木；拖曳空白處旋轉';updateEditor();}
+function chooseBrush(mode){placeType=null;brushMode=mode;orbitMode=false;selected=null;document.querySelectorAll('[data-type]').forEach(b=>b.classList.remove('active'));document.querySelectorAll('[data-brush]').forEach(b=>b.classList.toggle('active',b.dataset.brush===mode));$('btn-select').classList.remove('selected');$('btn-orbit').classList.remove('selected');$('map-hint').textContent='手繪模式：可在 2D 或 3D 地表拖曳';$('stage-tip').textContent='手繪模式｜在 3D 地表拖曳，轉動請先切換「旋轉觀察」';updateEditor();drawMap();}
 function showBrushOutputs(){$('brush-radius-o').textContent=Number($('brush-radius').value).toFixed(1)+' km';$('brush-strength-o').textContent=$('brush-strength').value+' m';}
 function brushAt(u,v){const radius=Number($('brush-radius').value),strength=Number($('brush-strength').value),target=Number($('brush-target').value)||0;
  const radX=radius*1000/state.widthM,radY=radius*1000/state.heightM;
@@ -47,7 +48,7 @@ function brushLine(a,b){const r=Number($('brush-radius').value),d=Math.hypot((a[
  for(let n=1;n<=pieces;n++)brushAt(lerp(a[0],b[0],n/pieces),lerp(a[1],b[1],n/pieces));
 }
 
-function selectShape(id){selected=id;chooseStamp(null);selected=id;updateList();updateEditor();}
+function selectShape(id){selected=id;chooseStamp(null);selected=id;updateList();updateEditor();updateMarkers();}
 function addShape(u,v){if(!placeType)return;remember();const shape=newShape(placeType,clamp(u,.01,.99),clamp(v,.01,.99));state.objects.push(shape);selectShape(shape.id);refresh();msg(`已新增「${TYPES[shape.type].name}」。拖曳地圖上的圓點或右側調整尺寸。`);}
 function updateList(){$('shape-count').textContent=state.objects.length;const root=$('shape-list');root.innerHTML='';for(const s of [...state.objects].reverse()){const b=document.createElement('button');b.textContent=`${TYPES[s.type].name} · ${fmt(s.height)} m`;b.classList.toggle('current',s.id===selected);b.onclick=()=>selectShape(s.id);root.appendChild(b);}}
 function selectedShape(){return state.objects.find(s=>s.id===selected);}
@@ -60,11 +61,12 @@ map.addEventListener('pointerdown',e=>{if(e.button!==0)return;map.setPointerCapt
 map.addEventListener('pointermove',e=>{if(brushMode){const uv=mapUV(e);brushPoint=uv;if(painting){brushLine(painting,uv);painting=uv;schedule();}else drawMap();return;}if(!drag)return;const s=state.objects.find(x=>x.id===drag.id);if(!s)return;const [u,v]=mapUV(e);s.x=clamp(u-drag.ox,.005,.995);s.y=clamp(v-drag.oy,.005,.995);moved=true;schedule();});
 map.addEventListener('pointerup',()=>{if(painting){painting=null;refresh();msg('已完成一筆手繪塑形，可撤銷。');}if(drag){drag=null;refresh();}});map.addEventListener('pointercancel',()=>{drag=null;painting=null;});map.addEventListener('pointerleave',()=>{brushPoint=null;if(!painting)drawMap();});
 for(const typeBtn of document.querySelectorAll('[data-type]'))typeBtn.onclick=()=>chooseStamp(typeBtn.dataset.type);
-$('btn-select').onclick=()=>chooseStamp(null);for(const b of document.querySelectorAll('[data-brush]'))b.onclick=()=>chooseBrush(b.dataset.brush);for(const id of ['brush-radius','brush-strength'])$(id).oninput=()=>{showBrushOutputs();drawMap();};
+$('btn-select').onclick=()=>chooseStamp(null);$('btn-orbit').onclick=()=>{chooseStamp(null);orbitMode=true;$('btn-select').classList.remove('selected');$('btn-orbit').classList.add('selected');$('stage-tip').textContent='旋轉觀察｜拖曳旋轉視角，滾輪縮放';};for(const b of document.querySelectorAll('[data-brush]'))b.onclick=()=>chooseBrush(b.dataset.brush);for(const id of ['brush-radius','brush-strength'])$(id).oninput=()=>{showBrushOutputs();drawMap();};
 for(const id of ['height','width','length','angle','soft']){$(id).addEventListener('pointerdown',()=>{if(selectedShape())remember();},{passive:true});$(id).addEventListener('input',()=>{const s=selectedShape();if(!s)return;s[id==='width'?'w':id==='length'?'l':id]=Number($(id).value);showOutput();schedule();});}
 $('btn-delete').onclick=()=>{if(!selectedShape())return;remember();state.objects=state.objects.filter(x=>x.id!==selected);selected=null;refresh();};
 $('btn-duplicate').onclick=()=>{const s=selectedShape();if(!s)return;remember();const copy={...s,id:newShape(s.type).id,x:clamp(s.x+.04,0,1),y:clamp(s.y+.035,0,1)};state.objects.push(copy);selectShape(copy.id);refresh();};
 $('btn-undo').onclick=()=>{if(!history.length)return;future.push(snapshot());restore(history.pop());msg('已撤銷上一步。');};
+$('btn-map-toggle').onclick=()=>{$('map-popup').hidden=!$('map-popup').hidden;drawMap();};$('btn-map-close').onclick=()=>{$('map-popup').hidden=true;};$('btn-reset-view').onclick=()=>{if(camera&&controls){camera.position.set(10,9,13);controls.target.set(0,1,0);controls.update();}};
 $('btn-demo').onclick=()=>{remember();state=demo();chooseStamp(null);refresh();msg('已載入虛構冰河地景（80×48 km），可手繪與放置地形積木。');};
 $('btn-blank').onclick=()=>{remember();const widthM=Number($('extent-preset').value);state={...demo(),base:emptyBase(600,0),objects:[],widthM,heightM:widthM*.6,source:'虛構平坦地表（海拔 600m）',real:false};chooseStamp(null);refresh();msg('已建立平坦地表。也能先用四角高程建立坡地。');};
 $('btn-equal-boundary').onclick=()=>{const h=Number($('boundary-all').value);if(!Number.isFinite(h))return;for(const id of ['boundary-nw','boundary-ne','boundary-sw','boundary-se'])$(id).value=h;};
@@ -81,11 +83,11 @@ $('base-thickness').oninput=()=>{$('base-thickness-o').textContent=$('base-thick
 $('smooth').oninput=()=>{$('smooth-o').textContent=$('smooth').value+' 次';schedule();};
 $('z-scale').oninput=()=>{$('z-o').textContent=$('z-scale').value+'×';updateTerrain();update3DContours();};
 $('interval').onchange=()=>refresh();
-$('contours-overlay').onchange=()=>{show3DContours=$('contours-overlay').checked;update3DContours();};
+$('contours-overlay').onchange=()=>{show3DContours=$('contours-overlay').checked;update3DContours();};$('water-overlay').onchange=()=>updateWater();$('markers-overlay').onchange=()=>updateMarkers();
 $('show-stamps').onchange=()=>{showStamps=$('show-stamps').checked;drawMap();};
 for(const id of ['map-contours','map-elev','map-change'])$(id).onclick=()=>{mapMode={ 'map-contours':'contours','map-elev':'elev','map-change':'change'}[id];setActiveButtons(['map-contours','map-elev','map-change'],id);drawMap();};
 for(const id of ['view-now','view-before','view-diff'])$(id).onclick=()=>{viewMode={'view-now':'now','view-before':'before','view-diff':'diff'}[id];setActiveButtons(['view-now','view-before','view-diff'],id);updateTerrain();update3DContours();};
-function renderBackdrop(target,mode='contours',labels=true){const c=target.canvas,w=c.width,h=c.height;target.clearRect(0,0,w,h);const pad=mode==='print'?{l:90,t:130,r:60,b:170}:{l:0,t:0,r:0,b:0};const area={x:pad.l,y:pad.t,w:w-pad.l-pad.r,h:h-pad.t-pad.b};const r=rangeOf(height),br=rangeOf(state.base),deltaMax=Math.max(25,Math.max(Math.abs(r.max-br.min),Math.abs(r.min-br.max)));const sw=NX,sh=NY;
+function renderBackdrop(target,mode='contours',labels=true){const c=target.canvas,w=c.width,h=c.height;target.clearRect(0,0,w,h);const pad=mode==='print'?{l:90,t:130,r:60,b:170}:{l:0,t:0,r:0,b:0};let area={x:pad.l,y:pad.t,w:w-pad.l-pad.r,h:h-pad.t-pad.b};if(mode==='print'){const ratio=state.widthM/state.heightM;if(area.w/area.h>ratio){const old=area.w;area.w=area.h*ratio;area.x+=(old-area.w)/2;}else{const old=area.h;area.h=area.w/ratio;area.y+=(old-area.h)/2;}}const r=rangeOf(height),br=rangeOf(state.base),deltaMax=Math.max(25,Math.max(Math.abs(r.max-br.min),Math.abs(r.min-br.max)));const sw=NX,sh=NY;
  const cv=document.createElement('canvas');cv.width=sw;cv.height=sh;const cx=cv.getContext('2d');const im=cx.createImageData(sw,sh);
  for(let j=0;j<sh;j++)for(let i=0;i<sw;i++){const idx=j*sw+i,z=height[idx],delta=z-state.base[idx];let red,green,blue;
  if(mode==='change'){const a=clamp(Math.abs(delta)/250,0,1);if(delta>=0){red=248;green=243-102*a;blue=224-126*a;}else{red=232-141*a;green=244-68*a;blue=247-23*a;}}
@@ -150,13 +152,22 @@ function geometryFor(arr,mode=viewMode){
  for(let j=1;j<NY;j++)loop.push(j*NX+NX-1);
  for(let i=NX-2;i>=0;i--)loop.push((NY-1)*NX+i);
  for(let j=NY-2;j>=1;j--)loop.push(j*NX);
+ // 地層色帶是教學示意，不代表真實岩層厚度或地質層序
+ const colorsOfBands=[[.69,.53,.31],[.88,.73,.48],[.77,.58,.34],[.65,.45,.26],[.54,.38,.27],[.48,.34,.24]];
+ const steps=[0,.05,.23,.46,.70,.88,1];
  for(let n=0;n<loop.length;n++){
   const a=loop[n],b=loop[(n+1)%loop.length],A=a*3,B=b*3;
-  const topA=addVertex(positions[A],positions[A+1],positions[A+2],[.38,.33,.27]);
-  const topB=addVertex(positions[B],positions[B+1],positions[B+2],[.38,.33,.27]);
-  const botA=addVertex(positions[A],floorY,positions[A+2],[.25,.22,.19]);
-  const botB=addVertex(positions[B],floorY,positions[B+2],[.25,.22,.19]);
-  indices.push(topA,topB,botA,topB,botB,botA);
+  const topY1=positions[A+1],topY2=positions[B+1];
+  for(let band=0;band<steps.length-1;band++){
+   const f0=steps[band],f1=steps[band+1],c=colorsOfBands[band];
+   const yA0=lerp(topY1,floorY,f0),yB0=lerp(topY2,floorY,f0);
+   const yA1=lerp(topY1,floorY,f1),yB1=lerp(topY2,floorY,f1);
+   const v0=addVertex(positions[A],yA0,positions[A+2],c);
+   const v1=addVertex(positions[B],yB0,positions[B+2],c);
+   const v2=addVertex(positions[A],yA1,positions[A+2],c);
+   const v3=addVertex(positions[B],yB1,positions[B+2],c);
+   indices.push(v0,v1,v2,v1,v3,v2);
+  }
  }
  const bottom=[
   addVertex(-WORLD_W/2,floorY,-WORLD_D/2,[.25,.22,.19]),
@@ -166,16 +177,88 @@ function geometryFor(arr,mode=viewMode){
  indices.push(bottom[0],bottom[1],bottom[2],bottom[0],bottom[2],bottom[3]);
  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));g.setAttribute('color',new THREE.Float32BufferAttribute(vertexColors,3));g.setIndex(indices);g.computeVertexNormals();return g;
 }
-function build3D(){const root=$('three-wrap');renderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));renderer.outputColorSpace=THREE.SRGBColorSpace;root.appendChild(renderer.domElement);$('three-placeholder').remove();scene=new THREE.Scene();scene.background=new THREE.Color('#dfeaf1');camera=new THREE.PerspectiveCamera(43,2,.1,1000);camera.position.set(10,10,13);controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.dampingFactor=.08;controls.target.set(0,1,0);controls.minDistance=5;controls.maxDistance=35;scene.add(new THREE.HemisphereLight(0xf2f8ff,0xc7c0aa,1.45));const light=new THREE.DirectionalLight(0xffffff,1.9);light.position.set(-5,13,7);scene.add(light);const rim=new THREE.DirectionalLight(0xdde6f5,0.7);rim.position.set(7,6,-5);scene.add(rim);terrainMesh=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:.98,metalness:0}));scene.add(terrainMesh);linesGroup=new THREE.Group();scene.add(linesGroup);raycaster=new THREE.Raycaster();function resize(){const rect=root.getBoundingClientRect();renderer.setSize(rect.width,rect.height,false);camera.aspect=rect.width/rect.height;camera.updateProjectionMatrix();}resize();new ResizeObserver(resize).observe(root);
- let pointerStart=null;renderer.domElement.addEventListener('pointerdown',e=>{pointerStart=[e.clientX,e.clientY];});renderer.domElement.addEventListener('pointerup',e=>{if(!placeType||!pointerStart||Math.hypot(e.clientX-pointerStart[0],e.clientY-pointerStart[1])>7)return;const rect=renderer.domElement.getBoundingClientRect(),p=new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1);raycaster.setFromCamera(p,camera);const hits=raycaster.intersectObject(terrainMesh);if(!hits.length)return;const pos=hits[0].point;addShape(pos.x/WORLD_W+.5,pos.z/WORLD_D+.5);});
- renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera);});
+function pickTerrain(e){if(!renderer||!terrainMesh)return null;
+ const rect=renderer.domElement.getBoundingClientRect();
+ const p=new THREE.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1);
+ raycaster.setFromCamera(p,camera);
+ const markerHit=markersGroup?.visible?raycaster.intersectObjects(markersGroup.children,false)[0]:null;
+ const surfaceHit=raycaster.intersectObject(terrainMesh,false)[0];
+ let uv=null;
+ if(surfaceHit){const q=surfaceHit.point;uv=[clamp(q.x/WORLD_W+.5,0,1),clamp(q.z/WORLD_D+.5,0,1)];}
+ return {uv,marker:markerHit?.object.userData?.shapeId||null};
 }
-function updateTerrain(){if(!renderer)return;const old=terrainMesh.geometry;terrainMesh.geometry=geometryFor(height);old.dispose();const r=rangeOf(height);$('height-legend').textContent=viewMode==='diff'?'藍：降低（侵蝕）／橘：增高（堆積）':`分層設色＋實心底座｜高程 ${fmt(r.min)}～${fmt(r.max)} m｜垂直誇大 ${$('z-scale').value}×`;}
+function shapeAt3D(uv){if(!uv)return null;let found=null,dist=.042;for(let i=state.objects.length-1;i>=0;i--){const s=state.objects[i],d=Math.hypot((uv[0]-s.x)*1.1,uv[1]-s.y);if(d<dist){dist=d;found=s;}}return found;}
+function updateMarkers(){if(!markersGroup||!THREE)return;
+ for(const child of [...markersGroup.children]){markersGroup.remove(child);child.geometry.dispose();child.material.dispose();}
+ markersGroup.visible=$('markers-overlay').checked && viewMode!=='before';if(!markersGroup.visible)return;
+ const r=rangeOf(height),scale=2.7/Math.max(300,r.span)*Number($('z-scale').value);
+ for(const s of state.objects){const h=bilinear(height,NX,NY,s.x,s.y);const marker=new THREE.Mesh(new THREE.SphereGeometry(.11,10,8),new THREE.MeshStandardMaterial({color:s.id===selected?0xf18c33:0x1d6f83,roughness:.45,emissive:s.id===selected?0x542500:0x072a35,emissiveIntensity:.25}));
+ marker.position.set((s.x-.5)*WORLD_W,(h-r.min)*scale+.13,(s.y-.5)*WORLD_D);marker.userData.shapeId=s.id;markersGroup.add(marker);}
+}
+function waterRibbon(path,width=.045,color=0x3ab4dd){const pos=[],tri=[];const r=rangeOf(height),factor=2.7/Math.max(300,r.span)*Number($('z-scale').value);
+ for(let n=0;n<path.length;n++){const [u,v]=path[n];let du,dv;if(n===0){du=path[1][0]-u;dv=path[1][1]-v;}else if(n===path.length-1){du=u-path[n-1][0];dv=v-path[n-1][1];}else{du=path[n+1][0]-path[n-1][0];dv=path[n+1][1]-path[n-1][1];}
+ const len=Math.hypot(du*WORLD_W,dv*WORLD_D)||1;const ox=-dv*WORLD_D/len*width/WORLD_W,oy=du*WORLD_W/len*width/WORLD_D;
+ for(const sign of [-1,1]){const x=clamp(u+ox*sign,0,1),y=clamp(v+oy*sign,0,1),h=bilinear(height,NX,NY,x,y);pos.push((x-.5)*WORLD_W,(h-r.min)*factor+.035,(y-.5)*WORLD_D);}
+ if(n>0){const a=(n-1)*2,b=n*2;tri.push(a,a+1,b,b,a+1,b+1);}
+ }
+ const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));g.setIndex(tri);g.computeVertexNormals();return new THREE.Mesh(g,new THREE.MeshStandardMaterial({color,roughness:.3,metalness:.03,side:THREE.DoubleSide,transparent:true,opacity:.92,depthWrite:false}));
+}
+function updateWater(){if(!waterGroup||!THREE)return;
+ for(const m of [...waterGroup.children]){waterGroup.remove(m);m.geometry?.dispose();m.material?.dispose();}
+ if(!$('water-overlay').checked || viewMode!=='now')return;
+ // 示意流路。不是流向、匯流與冰水搬運的物理模擬；不寫入 DEM。
+ const main=[];for(let n=0;n<=95;n++){const u=.12+.83*n/95,v=.52+.037*Math.sin(u*18)-.025*Math.sin(u*37);main.push([u,v]);}
+ waterGroup.add(waterRibbon(main,.055,0x45c2e5));
+ for(const [start,end,shift] of [[.15,.32,-.16],[.21,.41,.13],[.32,.51,-.19]]){
+  const tributary=[];for(let n=0;n<=30;n++){const t=n/30,u=lerp(start,end,t),v=lerp(.52+shift,.52+.037*Math.sin(end*18)-.025*Math.sin(end*37),t)+.007*Math.sin(t*8);tributary.push([u,v]);}
+  waterGroup.add(waterRibbon(tributary,.022,0x8dd9ed));
+ }
+}
+function build3D(){
+ const root=$('three-wrap');renderer=new THREE.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});
+ renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));renderer.outputColorSpace=THREE.SRGBColorSpace;
+ root.appendChild(renderer.domElement);$('three-placeholder').remove();scene=new THREE.Scene();scene.background=new THREE.Color('#e6f0f5');
+ camera=new THREE.PerspectiveCamera(40,2,.1,1000);camera.position.set(10,9,13);
+ controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.dampingFactor=.085;controls.target.set(0,1,0);controls.minDistance=5;controls.maxDistance=40;
+ scene.add(new THREE.HemisphereLight(0xf4faff,0xb9a68a,1.5));const light=new THREE.DirectionalLight(0xfff4df,2.2);light.position.set(-7,15,9);scene.add(light);
+ scene.add(new THREE.AmbientLight(0xe1ecf3,.4));
+ terrainMesh=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:.94}));scene.add(terrainMesh);
+ linesGroup=new THREE.Group();scene.add(linesGroup);waterGroup=new THREE.Group();scene.add(waterGroup);markersGroup=new THREE.Group();scene.add(markersGroup);
+ raycaster=new THREE.Raycaster();
+ function resize(){const rect=root.getBoundingClientRect();renderer.setSize(rect.width,rect.height,false);camera.aspect=rect.width/rect.height;camera.updateProjectionMatrix();}
+ resize();new ResizeObserver(resize).observe(root);
+ // 3D 地形直接編輯：積木放置、標記拖曳、手繪（另外保留相機旋轉）
+ let operation=null;
+ const canvas=renderer.domElement;
+ canvas.addEventListener('pointerdown',e=>{
+  if(e.button!==0)return;const hit=pickTerrain(e);if(!hit?.uv)return;
+  if(orbitMode)return;
+  if(brushMode){remember();operation={kind:'brush',last:hit.uv};brushAt(...hit.uv);schedule();}
+  else if(placeType){operation={kind:'place',start:[e.clientX,e.clientY],uv:hit.uv};}
+  else{const s=state.objects.find(o=>o.id===hit.marker)||shapeAt3D(hit.uv);
+   if(s){selectShape(s.id);remember();operation={kind:'move',id:s.id,ox:hit.uv[0]-s.x,oy:hit.uv[1]-s.y};}
+  }
+  if(operation){controls.enabled=false;canvas.setPointerCapture(e.pointerId);e.preventDefault();e.stopImmediatePropagation();}
+ },true);
+ canvas.addEventListener('pointermove',e=>{
+  if(!operation)return;const hit=pickTerrain(e);if(!hit?.uv)return;
+  if(operation.kind==='move'){const s=state.objects.find(o=>o.id===operation.id);if(!s)return;s.x=clamp(hit.uv[0]-operation.ox,.005,.995);s.y=clamp(hit.uv[1]-operation.oy,.005,.995);schedule();}
+  if(operation.kind==='brush'){brushLine(operation.last,hit.uv);operation.last=hit.uv;schedule();}
+ },true);
+ function finish(e){if(!operation)return;
+  if(operation.kind==='place'){if(Math.hypot(e.clientX-operation.start[0],e.clientY-operation.start[1])<10){const uv=pickTerrain(e)?.uv||operation.uv;addShape(...uv);}}
+  else{refresh();msg(operation.kind==='move'?'已在 3D 模型中移動地形積木。':'已完成 3D 手繪塑形，可撤銷。');}
+  operation=null;controls.enabled=true;if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);
+ }
+ canvas.addEventListener('pointerup',finish,true);canvas.addEventListener('pointercancel',finish,true);
+ renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera);});viewReady=true;
+}
+function updateTerrain(){if(!renderer)return;const old=terrainMesh.geometry;terrainMesh.geometry=geometryFor(height);old.dispose();const r=rangeOf(height);updateMarkers();updateWater();$('height-legend').textContent=viewMode==='diff'?'藍：降低（侵蝕）／橘：增高（堆積）':`分層設色＋實心底座｜高程 ${fmt(r.min)}～${fmt(r.max)} m｜垂直誇大 ${$('z-scale').value}×`;}
 function update3DContours(){if(!linesGroup)return;while(linesGroup.children.length){const c=linesGroup.children[0];linesGroup.remove(c);c.geometry?.dispose();c.material?.dispose();}if(!show3DContours)return;const arr=viewMode==='before'?state.base:height,r=rangeOf(height),factor=2.7/Math.max(300,r.span)*Number($('z-scale').value),positions=[];let levelCount=0;eachContour(arr,Number($('interval').value),(a,b,lv)=>{const h=clamp((lv-r.min)*factor+.015,-2,10);positions.push((a[0]-.5)*WORLD_W,h,(a[1]-.5)*WORLD_D,(b[0]-.5)*WORLD_W,h,(b[1]-.5)*WORLD_D);levelCount++;});if(positions.length){const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));linesGroup.add(new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:0x34474c,opacity:.67,transparent:true,depthTest:true})));}}
 function downloadBlob(data,name,mime='application/octet-stream'){const blob=data instanceof Blob?data:new Blob([data],{type:mime}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
-$('btn-save').onclick=()=>{downloadBlob(JSON.stringify({format:'glacier-studio-v3',savedAt:new Date().toISOString(),...snapshot(),interval:Number($('interval').value),zscale:Number($('z-scale').value)},null,2),'glacier-terrain-v3.json','application/json');msg('已儲存可再次編輯的專案 JSON。');};
+$('btn-save').onclick=()=>{downloadBlob(JSON.stringify({format:'glacier-studio-v4',savedAt:new Date().toISOString(),...snapshot(),interval:Number($('interval').value),zscale:Number($('z-scale').value)},null,2),'glacier-terrain-v4.json','application/json');msg('已儲存可再次編輯的專案 JSON。');};
 $('btn-open').onclick=()=>$('file-project').click();
-$('file-project').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{const data=JSON.parse(await file.text());if(!['glacier-studio-v2','glacier-studio-v3'].includes(data.format))throw Error('此 JSON 不是工作室 V2/V3 專案');
+$('file-project').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{const data=JSON.parse(await file.text());if(!['glacier-studio-v2','glacier-studio-v3','glacier-studio-v4'].includes(data.format))throw Error('此 JSON 不是工作室 V2/V3/V4 專案');
  if(!data.base||!Array.isArray(data.objects))throw Error('專案格式不完整');
  if(data.base.length===180*108) data.base=Array.from(resample(Float32Array.from(data.base),180,108));
  if(data.base.length!==NX*NY)throw Error('專案格網尺寸不符');
@@ -183,7 +266,9 @@ $('file-project').onchange=async e=>{const file=e.target.files[0];if(!file)retur
 $('btn-asc').onclick=()=>{downloadBlob(exportASC(height,state.widthM,state.heightM),'glacier-terrain.asc','text/plain');msg('已輸出 QGIS 可讀取的 ASC 高程網格（虛構座標或來源局部平面網格）。');};
 $('btn-heights').onclick=()=>{const c=document.createElement('canvas');c.width=NX;c.height=NY;const x=c.getContext('2d'),im=x.createImageData(NX,NY),r=rangeOf(height);for(let k=0;k<height.length;k++){const v=Math.round(clamp((height[k]-r.min)/r.span,0,1)*255);im.data.set([v,v,v,255],k*4);}x.putImageData(im,0,0);c.toBlob(blob=>downloadBlob(blob,'glacier-heightmap-8bit.png','image/png'));msg('已輸出相對灰階高度 PNG。精確高程請用 ASC。');};
 $('btn-a4').onclick=()=>{const c=document.createElement('canvas');c.width=3508;c.height=2480;const cc=c.getContext('2d');cc.fillStyle='#fff';cc.fillRect(0,0,c.width,c.height);cc.fillStyle='#223e4f';cc.font='bold 76px system-ui';cc.fillText('冰河地形等高線判讀',110,110);cc.font='36px system-ui';cc.fillText('等高距：'+$('interval').value+' 公尺　｜　N ↑　｜　依平面線條判讀地形與坡度',120,184);const a=renderBackdrop(cc,'print');cc.fillStyle='#203c49';cc.font='33px system-ui';cc.fillText('請使用不同顏色標記地形，並說明判讀依據。',130,2340);cc.font='28px system-ui';cc.fillText('姓名／組別：_____________________    地形資料：'+(state.real?'實際 DEM 局部範圍（可能已人工修改）':'虛構教學示意'),130,2402);c.toBlob(b=>downloadBlob(b,'glacier-student-A4.png','image/png'),'image/png');msg('已輸出橫向 A4 學生圖（3508×2480）。');};
-$('btn-glb').onclick=()=>{if(!renderer){msg('3D 引擎尚未載入，無法匯出 GLB。');return;}const clone=new THREE.Mesh(geometryFor(height,'now'),new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:.85}));const g=new THREE.Group();g.add(clone);const exporter=new GLTFExporter();exporter.parse(g,data=>{downloadBlob(data,'glacier-solid-terrain.glb','model/gltf-binary');clone.geometry.dispose();clone.material.dispose();msg('已輸出包含側壁與底面的實心 GLB 模型（可再導入 Blender 檢查法線）。');},err=>msg('GLB 匯出失敗：'+err.message),{binary:true,onlyVisible:true,trs:false});};
+$('btn-glb').onclick=()=>{if(!renderer){msg('3D 引擎尚未載入，無法匯出 GLB。');return;}const clone=new THREE.Mesh(geometryFor(height,'now'),new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:.85}));const g=new THREE.Group();g.add(clone);
+ if($('water-overlay').checked){for(const water of waterGroup?.children||[]){const m=water.clone();m.geometry=water.geometry.clone();m.material=water.material.clone();g.add(m);}}
+ const exporter=new GLTFExporter();exporter.parse(g,data=>{downloadBlob(data,'glacier-solid-terrain.glb','model/gltf-binary');g.traverse(obj=>{obj.geometry?.dispose();obj.material?.dispose();});msg('已輸出地形方塊 GLB（含側壁與底面）'+($('water-overlay').checked?'，並含示意水道。':'。'));},err=>msg('GLB 匯出失敗：'+err.message),{binary:true,onlyVisible:true,trs:false});};
 // ----- 真實 DEM：Mapzen / AWS Terrarium PNG 瓦片 -----
 const REAL={
  aletsch:{name:'瑞士阿雷奇冰河附近',lat:46.43,lon:8.06,z:12,description:'山岳冰河區地表高程'},
@@ -208,10 +293,10 @@ $('file-dem').onchange=async e=>{const file=e.target.files[0];if(!file)return;ms
  }
  r=cropResample(values,sw,sh,dx,dy);
  }else throw Error('不支援此檔案格式');remember();state={base:r.base,objects:[],widthM:r.widthM||80000,heightM:r.heightM||(r.widthM||80000)*NY/NX,source:'本機匯入｜'+file.name,sourceURL:'',real:true};chooseStamp(null);refresh();msg('高程資料已匯入。注意 GeoTIFF 若為經緯度 CRS，水平公尺比例須先用 QGIS 重新投影；若是 GeoTIFF 多波段，請使用第一波段高程。');}catch(err){msg('匯入失敗：'+err.message);}e.target.value='';};
-syncUI();refresh();msg('V3 已就緒：可先設定國家公園尺度與邊界高度，再用地形積木或手繪塑形。正在載入 3D 引擎…');
+syncUI();refresh();msg('V4 已就緒：地形積木與手繪功能已整合在立體模型工作區中。正在載入 3D 引擎…');
 async function init3D(){try{
  const [lib,orbit,exporter]=await Promise.all([import('three'),import('three/addons/controls/OrbitControls.js'),import('three/addons/exporters/GLTFExporter.js')]);
  THREE=lib;OrbitControls=orbit.OrbitControls;GLTFExporter=exporter.GLTFExporter;
- build3D();updateTerrain();update3DContours();msg('3D 模型已就緒。先選擇地形積木，再點擊地圖或 3D 模型放置。');
-}catch(err){msg('2D 功能正常，但 3D 套件載入失敗：'+err.message+'。請檢查外部 CDN 連線。');$('three-placeholder').textContent='3D 未能載入：請檢查 Three.js CDN 網路連線';}}
+ build3D();updateTerrain();update3DContours();msg('3D 模型已就緒。可直接在立體地表放置積木、移動積木或使用手繪工具。');
+}catch(err){msg('2D 功能正常，但 3D 套件載入失敗：'+err.message+'。請檢查外部 CDN 連線。');$('three-placeholder').textContent='3D 套件無法載入；可使用右上角「2D 等高線」繼續編輯。';$('map-popup').hidden=false;}}
 init3D();
