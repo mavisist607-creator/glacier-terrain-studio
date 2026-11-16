@@ -1,6 +1,11 @@
 // 地形高程運算。不依賴 Three.js，可單獨測試。
-export const NX=300, NY=180;
+export const NX=461, NY=361; // 23×18 km preset = 50 m between samples
 export const TYPES={
+ mountain:{name:'三角錐',group:'純幾何',height:700,w:.11,l:.13,soft:.26,angle:0,info:'先以三角錐原型定位，再將三個斜面轉成高程網格，柔化山腳；三角錐是建模工具，不代表真實角峰成因'},
+ cone:{name:'圓錐',group:'純幾何',height:600,w:.10,l:.10,soft:.28,angle:0,info:'圓形底面、尖頂；堆積形成錐狀山，侵蝕形成錐狀凹地'},
+ sphere:{name:'球體（半球地表）',group:'純幾何',height:420,w:.115,l:.115,soft:.38,angle:0,info:'將球體上半部轉成半球形地表；堆積為圓頂丘、侵蝕為碗狀坑'},
+ box:{name:'長方體',group:'純幾何',height:350,w:.12,l:.095,soft:.22,angle:0,info:'頂面平坦、側壁較陡；柔和程度控制平台邊緣與地表銜接'},
+ cylinder:{name:'圓柱',group:'純幾何',height:320,w:.09,l:.09,soft:.20,angle:0,info:'圓形平頂台地或圓柱狀凹穴；邊緣柔和可以避免硬切線'},
  horn:{name:'角峰',group:'冰蝕',height:550,w:.105,l:.16,soft:.38,angle:0,info:'集中抬升的尖銳高地；實際角峰通常由多個冰斗向後侵蝕形成'},
  ridge:{name:'刃嶺',group:'冰蝕',height:270,w:.17,l:.065,soft:.3,angle:-10,info:'狹窄稜線；需配合相鄰冰斗判讀'},
  cirque:{name:'冰斗',group:'冰蝕',height:-360,w:.115,l:.18,soft:.42,angle:0,info:'半碗狀凹地；左側較高斗壁、右側開口，旋轉可改開口方向'},
@@ -12,10 +17,11 @@ export const TYPES={
  outwash:{name:'冰水沖積平原',group:'冰水',height:-60,w:.26,l:.23,soft:.55,angle:0,info:'局部整平與緩坡；真實冰水沉積形成的地形需觀察沉積證據'},
  dune:{name:'風積沙丘',group:'風積',height:65,w:.065,l:.08,soft:.4,angle:0,info:'新月形小丘，風向／砂源影響形態'}
 };
+export const GEOMETRY_TYPES=new Set(['mountain','cone','sphere','box','cylinder']);
 export const clamp=(n,a,b)=>Math.min(b,Math.max(a,n));
 export const lerp=(a,b,t)=>a+(b-a)*t;
 export const fmt=n=>Math.round(n).toLocaleString('en-US');
-export function newShape(type,x=.5,y=.5){const t=TYPES[type];if(!t)throw Error('未知類型');return {id:'s'+Date.now().toString(36)+Math.floor(Math.random()*1e6).toString(36),type,x,y,w:t.w,l:t.l,height:t.height,angle:t.angle,soft:t.soft};}
+export function newShape(type,x=.5,y=.5){const t=TYPES[type];if(!t)throw Error('未知類型');return {id:'s'+Date.now().toString(36)+Math.floor(Math.random()*1e6).toString(36),type,x,y,w:t.w,l:t.l,height:t.height,angle:t.angle,soft:t.soft,...(GEOMETRY_TYPES.has(type)?{operation:'deposit'}:{})};}
 // 使用四角高度建立連續起伏地表；上方為北，右側為東。
 export function boundaryBase(nw=2600,ne=700,sw=1900,se=500){
  const a=new Float32Array(NX*NY);
@@ -40,10 +46,29 @@ export function cropResample(src,sw,sh,cellX=1,cellY=1){
  return {base:out,widthM:cw*cellX,heightM:ch*cellY};
 }
 
+function smoothstep(a,b,v){const t=clamp((v-a)/(b-a),0,1);return t*t*(3-2*t);}
 function decay(r,p){return Math.exp(-Math.pow(Math.abs(r),p));}
-function influence(s,u,v){const ang=s.angle*Math.PI/180,dx=u-s.x,dy=v-s.y;const co=Math.cos(ang),si=Math.sin(ang);const rx=(dx*co+dy*si)/Math.max(.01,s.w),ry=(-dx*si+dy*co)/Math.max(.01,s.l);if(Math.abs(rx)>3.7||Math.abs(ry)>3.7)return 0;
+export function influence(s,u,v){const ang=s.angle*Math.PI/180,dx=u-s.x,dy=v-s.y;const co=Math.cos(ang),si=Math.sin(ang);const rx=(dx*co+dy*si)/Math.max(.01,s.w),ry=(-dx*si+dy*co)/Math.max(.01,s.l);if(Math.abs(rx)>3.7||Math.abs(ry)>3.7)return 0;
  const soft=s.soft,sharp=lerp(3.6,1.5,soft),p=lerp(1.5,2.4,soft);let val=0;
  switch(s.type){
+ case 'mountain':{
+  // 三角錐原型：三角形底面三條邊與一個中心峰頂。
+  // 由內向邊緣的線性高度形成三個斜面；柔化參數使山腳逐漸過渡。
+  const ax=-1,ay=-.8,bx=1,by=-.8,cx=0,cy=1,px=0,py=-.2;
+  const side=(x1,y1,x2,y2,x,y)=>(x2-x1)*(y-y1)-(y2-y1)*(x-x1);
+  const v1=side(ax,ay,bx,by,rx,ry)/side(ax,ay,bx,by,px,py);
+  const v2=side(bx,by,cx,cy,rx,ry)/side(bx,by,cx,cy,px,py);
+  const v3=side(cx,cy,ax,ay,rx,ry)/side(cx,cy,ax,ay,px,py);
+  const core=Math.min(v1,v2,v3);
+  // 三角錐尖頂保持清楚，外緣以可調的緩衝帶與周圍地表銜接。
+  const shoulder=Math.max(0, Math.min(1,(core+.12*soft)/(.12*soft+.0001)));
+  val=Math.max(0,core)*shoulder;
+  break;
+ }
+ case 'cone':{const r=Math.hypot(rx,ry);val=Math.max(0,1-r);break;}
+ case 'sphere':{const r=Math.hypot(rx,ry);val=r>=1?0:Math.sqrt(Math.max(0,1-r*r))*(1-smoothstep(1-(.08+soft*.30),1,r));break;}
+ case 'box':{const r=Math.max(Math.abs(rx),Math.abs(ry)),e=.04+soft*.32;val=1-smoothstep(1-e,1+e,r);break;}
+ case 'cylinder':{const r=Math.hypot(rx,ry),e=.04+soft*.32;val=1-smoothstep(1-e,1+e,r);break;}
  case 'horn':val=Math.exp(-sharp*Math.pow(Math.hypot(rx,ry),p*.78));break;
  case 'ridge':val=decay(ry*sharp,1.35)*Math.exp(-Math.pow(Math.max(0,Math.abs(rx)-.68)*2.7,2));break;
  case 'cirque':{const r=Math.hypot(rx,ry);const bowl=Math.exp(-1.8*Math.pow(r,1.8));const horseshoe=Math.exp(-Math.pow((r-.95)/(.19+soft*.14),2))*(rx<.2?1:.08);val=bowl-.40*horseshoe;break;}
@@ -60,7 +85,7 @@ function influence(s,u,v){const ang=s.angle*Math.PI/180,dx=u-s.x,dy=v-s.y;const 
 export function applyShapes(base,objects,smooth=2){const height=new Float32Array(base);if(!objects.length)return height;for(const s of objects){for(let y=0;y<NY;y++)for(let x=0;x<NX;x++){const k=y*NX+x;const inf=influence(s,x/(NX-1),y/(NY-1));if(Math.abs(inf)<.00001)continue;if(s.type==='outwash'){
  // 局部整平：保留一部分原地形，混合成緩斜地；height 代表下切/抬升基準值
  const target=base[k]+s.height + 15*(s.x-x/(NX-1));height[k]=lerp(height[k],target,clamp(inf*.84,0,.90));
- }else{height[k]+=s.height*inf;}
+ }else{const delta=GEOMETRY_TYPES.has(s.type)?(s.operation==='erode'?-Math.abs(s.height):Math.abs(s.height)):s.height;height[k]+=delta*inf;}
  }}
  if(smooth<=0)return height;
  // 保留真實 DEM 的原始細節，只平滑加上的地形變化量
@@ -87,10 +112,22 @@ export function demo(){const b=emptyBase(620,1450);const shapes=[];const add=(ty
  add('moraine',.66,.53,{height:140,w:.095,l:.27,angle:0});add('outwash',.79,.51,{height:-80,w:.21,l:.36});
  for(const [x,y] of [[.69,.26],[.77,.32],[.72,.68],[.82,.72]])add('drumlin',x,y,{height:80,w:.066,l:.033,angle:-12});
  add('esker',.79,.57,{height:87,w:.16,l:.035,angle:18});for(const [x,y] of [[.92,.3],[.93,.54],[.95,.75]])add('dune',x,y,{height:65,w:.05,l:.045,angle:-15});
- return {base:b,objects:shapes,widthM:80000,heightM:48000,source:'虛構冰河地景（示意地形，可修改）',sourceURL:'',real:false};
+ return {base:b,objects:shapes,widthM:23000,heightM:18000,source:'虛構冰河地景（示意地形，可修改）',sourceURL:'',real:false};
 }
 export function parseASC(raw){const lines=raw.replace(/^\uFEFF/,'').trim().split(/\r?\n/);const head={};let idx=0;while(idx<lines.length&&Object.keys(head).length<6){const m=lines[idx].trim().match(/^([a-zA-Z_]+)\s+([-+\d.eE]+)/);if(!m)break;head[m[1].toLowerCase()]=+m[2];idx++;}
  const sw=head.ncols,sh=head.nrows;if(!(sw>=2&&sh>=2&&sw<=10000&&sh<=10000))throw Error('ASC 標頭缺少有效的 ncols/nrows');const vals=lines.slice(idx).join(' ').trim().split(/\s+/).map(Number);if(vals.length<sw*sh)throw Error('ASC 高程筆數不足');let data=Float32Array.from(vals.slice(0,sw*sh));const nodata=head.nodata_value;let min=Infinity;for(const v of data)if(Number.isFinite(v)&&v!==nodata&&v>-9990)min=Math.min(min,v);if(!Number.isFinite(min))throw Error('ASC 沒有有效高程');for(let i=0;i<data.length;i++)if(!Number.isFinite(data[i])||data[i]===nodata||data[i]<-9990)data[i]=min;
  return {data,sw,sh,widthM:(head.cellsize||100)*sw,heightM:(head.cellsize||100)*sh};
 }
-export function exportASC(h,widthM,heightM){const cell=widthM/NX;const rows=[`ncols ${NX}`,`nrows ${NY}`,`xllcorner 0`,`yllcorner 0`,`cellsize ${cell.toFixed(5)}`,`NODATA_value -9999`];for(let j=0;j<NY;j++){rows.push(Array.from(h.slice(j*NX,(j+1)*NX),v=>v.toFixed(2)).join(' '));}return rows.join('\n');}
+// ESRI ASCII Raster requires square cells; resample rows for non-square project aspect ratios.
+export function exportASC(h,widthM,heightM){
+ const cell=widthM/(NX-1);
+ const outRows=Math.max(2,Math.ceil(heightM/cell)+1);
+ const rows=[`ncols ${NX}`,`nrows ${outRows}`,`xllcorner 0`,`yllcorner 0`,`cellsize ${cell.toFixed(6)}`,`NODATA_value -9999`];
+ for(let j=0;j<outRows;j++){
+  const v=j/(outRows-1);
+  let line=[];
+  for(let i=0;i<NX;i++)line.push(bilinear(h,NX,NY,i/(NX-1),v).toFixed(2));
+  rows.push(line.join(' '));
+ }
+ return rows.join('\n');
+}

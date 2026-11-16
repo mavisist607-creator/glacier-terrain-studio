@@ -43,3 +43,33 @@
 #btn-orbit.selected{background:#d1ecee;border-color:#31849a;color:#12455f}
 @media(max-width:1330px){.layout{grid-template-columns:236px minmax(440px,1fr)}.rightpanel{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.three-wrap{min-height:540px;height:72vh}}
 @media(max-width:840px){.layout{display:flex;flex-direction:column}.workarea{order:1;min-height:auto}.leftpanel{order:2}.rightpanel{order:3}.stage-head{flex-wrap:wrap}.stage-head span{display:none}.three-wrap{min-height:560px;height:74vh}.terrain-tools{width:190px;max-height:310px}.map-popup{right:7px;top:auto;bottom:70px;width:min(340px,calc(100% - 14px))}.stage-bottom{max-width:calc(100% - 14px)}}
+
+/* V4.2：可視化地形積木與同一工作區的 3D 原型預覽 */
+.prefab-inspector{border:1px solid #cddde1;border-radius:11px;background:#f4f8f7;padding:7px;margin:8px 0 10px}
+.prefab-caption{display:flex;flex-direction:column;gap:3px;padding:3px 4px 7px}.prefab-caption strong{font-size:12px;color:#174b5b}.prefab-caption small{font-size:10px;color:#6e8892}
+.prefab-preview{height:132px;border:1px solid #d0dadd;border-radius:8px;overflow:hidden;position:relative;background:linear-gradient(145deg,#d8e7f1 0%,#f2f6ec 100%)}
+.prefab-preview canvas{display:block!important;width:100%!important;height:100%!important;touch-action:none}
+#prefab-fallback{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#77919c;font-size:11px;pointer-events:none}
+#prefab-description{font-size:10px;line-height:1.45;color:#546d79;margin:7px 3px 3px}
+.terrain-tools .stamp-grid button[data-type]{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;text-align:center;min-height:75px;padding:5px 3px;font-size:10px;line-height:1.25}
+.terrain-tools .stamp-grid button[data-type] .prefab-tile{display:block;width:100%;height:42px;pointer-events:none}
+.terrain-tools .stamp-grid button[data-type] .prefab-tile svg{width:100%;height:100%}
+.terrain-tools .stamp-grid button[data-type] .prefab-name{pointer-events:none}
+.terrain-tools .stamp-grid button[data-type="mountain"]{border-color:#4b8292;background:#e7f3f4}
+.terrain-tools .stamp-grid button[data-type="mountain"].active{background:#c4e5e7;border-color:#206c7d}
+@media(max-width:840px){.prefab-preview{height:104px}.terrain-tools{max-height:min(77vh,580px)}.terrain-tools .stamp-grid button[data-type]{min-height:62px}.terrain-tools .stamp-grid button[data-type] .prefab-tile{height:32px}}
+
+/* V4.3｜積木兩頁分類與個別堆積／侵蝕屬性 */
+.prefab-tabs{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin:7px 0 10px}
+.prefab-tabs button{padding:9px 3px;border-radius:9px;border:1px solid #c5d6db;background:#edf3f3;color:#385e6a;font-size:10px;font-weight:750;cursor:pointer}
+.prefab-tabs button.active,.prefab-tabs button[aria-selected="true"]{background:#245f70;color:#fff;border-color:#245f70}
+.stamp-page:not([hidden]){display:contents}
+.stamp-page[hidden]{display:none!important}
+.geom-action{background:#f4f8f1;border:1px solid #d2e3ce;padding:9px;border-radius:9px;margin-bottom:9px}
+.geom-action label{display:block;margin-bottom:6px;font-size:11px;font-weight:750;color:#395b4e}
+.geom-action select{display:block;width:100%;border-radius:7px;border:1px solid #b8cec5;padding:8px 5px;background:white;color:#274b4b;font-size:11px}
+.geom-action .hint{margin:6px 0 0;line-height:1.4}
+#shape-operation-row[hidden]{display:none!important}
+#shape-operation-row select{width:100%;margin-top:7px;border:1px solid #b8d4d9;border-radius:8px;padding:8px;font-size:12px;background:#f9fcfa}
+.terrain-tools .stamp-grid button[data-type].active{background:#c6eaf0;color:#153e4f;border:2px solid #318aa2}
+.terrain-tools .stamp-grid button[data-type="mountain"]{border-color:#d6dee1;background:#f8fafb}
